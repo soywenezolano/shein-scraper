@@ -20,6 +20,14 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+app.get('/debug', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'Falta url' });
+  const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(url)}&render=true`;
+  const html = await httpGet(scraperUrl);
+  res.send(html.substring(0, 3000));
+});
+
 app.get('/precio', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: 'Falta el parámetro url' });
@@ -114,4 +122,3 @@ app.get('/precio', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Shein scraper corriendo en puerto ${PORT}`);
 });
-
