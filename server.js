@@ -20,14 +20,6 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-app.get('/debug', async (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).json({ error: 'Falta url' });
-  const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(url)}&render=true&premium=true`;
-  const html = await httpGet(scraperUrl);
-  res.send(html.substring(0, 3000));
-});
-
 app.get('/precio', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: 'Falta el parámetro url' });
@@ -64,45 +56,33 @@ app.get('/precio', async (req, res) => {
     }
     const goodsId = matchId[1];
 
-    // Paso 2: Obtener HTML via ScraperAPI premium
-    const desktopUrl = productoUrl
-      .replace('https://m.shein.com/us/', 'https://us.shein.com/')
-      .split('?')[0];
+    // Paso 2: Llamar API interna de Shein con goods_id
+    const apiUrl = `https://us.shein.com/api/productInfo/get_product_info_v2?goods_id=${goodsId}&currency=USD&lang=en&appVersion=1`;
+    const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(apiUrl)}&premium=true`;
+    const rawData = await httpGet(scraperUrl);
 
-    const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(desktopUrl)}&render=true&premium=true`;
-    const html = await httpGet(scraperUrl);
-
-    // Buscar precio en JSON embebido en el HTML
     let precio = null;
-    const precioPatterns = [
-      /"amountWithSymbol"\s*:\s*"([^"]+)"/,
-      /"salePrice"\s*:\s*\{[^}]*"amount"\s*:\s*"([\d.]+)"/,
-      /"retailPrice"\s*:\s*\{[^}]*"amount"\s*:\s*"([\d.]+)"/,
-      /"goods_price"\s*:\s*"([\d.]+)"/,
-      /\$(\d+\.\d{2})/
-    ];
-    for (const pattern of precioPatterns) {
-      const match = html.match(pattern);
-      if (match) {
-        precio = match[1].startsWith('$') ? match[1] : `$${match[1]}`;
-        break;
-      }
-    }
-
-    // Buscar nombre en JSON embebido
     let nombre = null;
-    const nombrePatterns = [
-      /"goods_name"\s*:\s*"([^"]+)"/,
-      /"productTitle"\s*:\s*"([^"]+)"/,
-      /<h1[^>]*>\s*([^<]{10,})\s*<\/h1>/i,
-      /<title>\s*([^|<]{10,})\s*[|<]/i
-    ];
-    for (const pattern of nombrePatterns) {
-      const match = html.match(pattern);
-      if (match) {
-        nombre = match[1].trim();
-        break;
-      }
+
+    try {
+      const data = JSON.parse(rawData);
+      const info = data.info || data.data || data;
+      
+      // Extraer precio
+      const priceInfo = info.goods_price_info || info.priceInfo || {};
+      precio = priceInfo.discountPrice?.amountWithSymbol 
+            || priceInfo.salePrice?.amountWithSymbol
+            || priceInfo.retailPrice?.amountWithSymbol
+            || null;
+
+      // Extraer nombre
+      nombre = info.goods_name || info.productTitle || info.title || null;
+    } catch(e) {
+      // Si no es JSON, buscar con regex
+      const precioMatch = rawData.match(/"amountWithSymbol"\s*:\s*"([^"]+)"/);
+      const nombreMatch = rawData.match(/"goods_name"\s*:\s*"([^"]+)"/);
+      precio = precioMatch ? precioMatch[1] : null;
+      nombre = nombreMatch ? nombreMatch[1] : null;
     }
 
     res.json({
@@ -110,7 +90,7 @@ app.get('/precio', async (req, res) => {
       goods_id: goodsId,
       precio,
       nombre,
-      url_producto: desktopUrl
+      url_producto: productoUrl
     });
 
   } catch (error) {
