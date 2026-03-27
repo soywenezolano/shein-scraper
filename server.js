@@ -1,8 +1,20 @@
 const express = require('express');
 const { chromium } = require('playwright');
+const http = require('http');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    http.get(url, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(data));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -19,7 +31,7 @@ app.get('/precio', async (req, res) => {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
 
-    // Paso 1: Obtener URL real con mobile UA
+    // Paso 1: Obtener URL real del producto con mobile UA
     const mobileContext = await browser.newContext({
       userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
       viewport: { width: 390, height: 844 },
@@ -35,74 +47,41 @@ app.get('/precio', async (req, res) => {
       productoUrl = urlObj.searchParams.get('redirection') || productoUrl;
     }
     await mobileContext.close();
+    await browser.close();
 
     // Extraer goods_id
     const matchId = productoUrl.match(/[-,]p-(\d+)-/);
     if (!matchId) {
-      await browser.close();
       return res.json({ exito: false, error: 'No se pudo extraer ID del producto', url_final: productoUrl });
     }
     const goodsId = matchId[1];
 
-    // Paso 2: Construir URL desktop y acceder via ScraperAPI como proxy
+    // Paso 2: Obtener HTML via ScraperAPI (HTTP directo)
     const desktopUrl = productoUrl
       .replace('https://m.shein.com/us/', 'https://us.shein.com/')
       .split('?')[0];
 
-    const desktopContext = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 800 },
-      proxy: {
-        server: 'http://proxy.scraperapi.com:8001',
-        username: 'scraperapi',
-        password: process.env.SCRAPER_API_KEY
-      },
-      ignoreHTTPSErrors: true
-    });
-    const desktopPage = await desktopContext.newPage();
-    await desktopPage.goto(desktopUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(desktopUrl)}&render=true`;
+    const html = await httpGet(scraperUrl);
 
-    try {
-      await desktopPage.waitForSelector('[class*="price"]', { timeout: 15000 });
-    } catch(e) {}
+    // Extraer precio con regex
+    const precioMatch = html.match(/\$\d+\.\d{2}/);
+    const precio = precioMatch ? precioMatch[0] : null;
 
-    await desktopPage.waitForTimeout(3000);
-
-    const datos = await desktopPage.evaluate(() => {
-      const allEls = document.querySelectorAll('*');
-      let precio = null;
-      let precioEl = null;
-
-      for (const el of allEls) {
-        if (el.children.length === 0) {
-          const text = el.textContent.trim();
-          if (text.match(/^\$[\d.]+$/) || text.match(/^\$[\d,]+\.\d{2}$/)) {
-            precio = text;
-            precioEl = el.className;
-            break;
-          }
-        }
-      }
-
-      const h1 = document.querySelector('h1');
-      const nombre = h1 ? h1.textContent.trim() : null;
-
-      return { precio, nombre, precioEl, titulo: document.title, finalUrl: window.location.href };
-    });
-
-    await browser.close();
+    // Extraer nombre con regex
+    const nombreMatch = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+    const nombre = nombreMatch ? nombreMatch[1].trim() : null;
 
     res.json({
       exito: true,
       goods_id: goodsId,
-      precio: datos.precio,
-      nombre: datos.nombre,
-      clase_precio: datos.precioEl,
-      url_producto: datos.finalUrl
+      precio,
+      nombre,
+      url_producto: desktopUrl
     });
 
   } catch (error) {
-    if (browser) await browser.close();
+    if (browser) try { await browser.close(); } catch(e) {}
     res.status(500).json({ exito: false, error: error.message });
   }
 });
