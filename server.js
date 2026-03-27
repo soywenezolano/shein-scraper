@@ -23,23 +23,35 @@ app.get('/precio', async (req, res) => {
     });
 
     const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
       viewport: { width: 390, height: 844 },
       isMobile: true,
+      locale: 'en-US',
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      }
     });
 
     const page = await context.newPage();
     
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
     
-    // Esperar redirección y carga del producto
-    await page.waitForTimeout(4000);
+    let finalUrl = page.url();
     
-    const finalUrl = page.url();
+    // Si cae en captcha, extraer URL real del parámetro redirection
+    if (finalUrl.includes('/risk/challenge') || finalUrl.includes('captcha')) {
+      const urlObj = new URL(finalUrl);
+      const redirection = urlObj.searchParams.get('redirection');
+      if (redirection) {
+        await page.goto(redirection, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(4000);
+        finalUrl = page.url();
+      }
+    }
     
-    // Extraer datos del producto
     const datos = await page.evaluate(() => {
-      // Precio - múltiples selectores posibles en Shein
       const precioSelectors = [
         '.product-intro__head-price .from',
         '.product-intro__head-price span',
@@ -47,19 +59,19 @@ app.get('/precio', async (req, res) => {
         '.price-new',
         '[data-price]',
         '.original-price',
-        '.sale-price'
+        '.sale-price',
+        '[class*="price"]'
       ];
       
       let precio = null;
       for (const sel of precioSelectors) {
         const el = document.querySelector(sel);
-        if (el && el.textContent.trim().includes('$')) {
+        if (el && el.textContent.trim().match(/\$[\d.]+/)) {
           precio = el.textContent.trim();
           break;
         }
       }
       
-      // Nombre del producto
       const nombreSelectors = [
         '.product-intro__head-name',
         'h1',
