@@ -56,7 +56,7 @@ app.get('/precio', async (req, res) => {
     }
     const goodsId = matchId[1];
 
-    // Paso 2: Obtener HTML via ScraperAPI (HTTP directo)
+    // Paso 2: Obtener HTML via ScraperAPI
     const desktopUrl = productoUrl
       .replace('https://m.shein.com/us/', 'https://us.shein.com/')
       .split('?')[0];
@@ -64,13 +64,38 @@ app.get('/precio', async (req, res) => {
     const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(desktopUrl)}&render=true`;
     const html = await httpGet(scraperUrl);
 
-    // Extraer precio con regex
-    const precioMatch = html.match(/\$\d+\.\d{2}/);
-    const precio = precioMatch ? precioMatch[0] : null;
+    // Buscar precio en JSON embebido en el HTML
+    let precio = null;
+    const precioPatterns = [
+      /"amountWithSymbol"\s*:\s*"([^"]+)"/,
+      /"salePrice"\s*:\s*\{[^}]*"amount"\s*:\s*"([\d.]+)"/,
+      /"retailPrice"\s*:\s*\{[^}]*"amount"\s*:\s*"([\d.]+)"/,
+      /"goods_price"\s*:\s*"([\d.]+)"/,
+      /\$(\d+\.\d{2})/
+    ];
+    for (const pattern of precioPatterns) {
+      const match = html.match(pattern);
+      if (match) {
+        precio = match[1].startsWith('$') ? match[1] : `$${match[1]}`;
+        break;
+      }
+    }
 
-    // Extraer nombre con regex
-    const nombreMatch = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-    const nombre = nombreMatch ? nombreMatch[1].trim() : null;
+    // Buscar nombre en JSON embebido
+    let nombre = null;
+    const nombrePatterns = [
+      /"goods_name"\s*:\s*"([^"]+)"/,
+      /"productTitle"\s*:\s*"([^"]+)"/,
+      /<h1[^>]*>\s*([^<]{10,})\s*<\/h1>/i,
+      /<title>\s*([^|<]{10,})\s*[|<]/i
+    ];
+    for (const pattern of nombrePatterns) {
+      const match = html.match(pattern);
+      if (match) {
+        nombre = match[1].trim();
+        break;
+      }
+    }
 
     res.json({
       exito: true,
@@ -89,3 +114,4 @@ app.get('/precio', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`Shein scraper corriendo en puerto ${PORT}`);
 });
+
