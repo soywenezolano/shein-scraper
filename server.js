@@ -44,35 +44,37 @@ app.get('/precio', async (req, res) => {
     }
     const goodsId = matchId[1];
 
-       // Paso 2: Construir URL desktop desde la URL mobile del producto
+    // Paso 2: Construir URL desktop y acceder via ScraperAPI como proxy
     const desktopUrl = productoUrl
       .replace('https://m.shein.com/us/', 'https://us.shein.com/')
-      .split('?')[0]; // quitar query params
+      .split('?')[0];
 
     const desktopContext = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       viewport: { width: 1280, height: 800 },
+      proxy: {
+        server: 'http://proxy.scraperapi.com:8001',
+        username: 'scraperapi',
+        password: process.env.SCRAPER_API_KEY
+      },
+      ignoreHTTPSErrors: true
     });
     const desktopPage = await desktopContext.newPage();
-    const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(desktopUrl)}&render=true`;
-await desktopPage.goto(scraperUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await desktopPage.goto(desktopUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    
-    // Esperar que cargue el precio
     try {
-      await desktopPage.waitForSelector('[class*="price"]', { timeout: 10000 });
+      await desktopPage.waitForSelector('[class*="price"]', { timeout: 15000 });
     } catch(e) {}
-    
+
     await desktopPage.waitForTimeout(3000);
 
     const datos = await desktopPage.evaluate(() => {
-      // Buscar cualquier elemento con precio en dólares
       const allEls = document.querySelectorAll('*');
       let precio = null;
       let precioEl = null;
-      
+
       for (const el of allEls) {
-        if (el.children.length === 0) { // solo elementos hoja
+        if (el.children.length === 0) {
           const text = el.textContent.trim();
           if (text.match(/^\$[\d.]+$/) || text.match(/^\$[\d,]+\.\d{2}$/)) {
             precio = text;
@@ -98,7 +100,6 @@ await desktopPage.goto(scraperUrl, { waitUntil: 'domcontentloaded', timeout: 600
       clase_precio: datos.precioEl,
       url_producto: datos.finalUrl
     });
-
 
   } catch (error) {
     if (browser) await browser.close();
