@@ -10,10 +10,7 @@ app.get('/health', (req, res) => {
 
 app.get('/precio', async (req, res) => {
   const url = req.query.url;
-  
-  if (!url) {
-    return res.status(400).json({ error: 'Falta el parámetro url' });
-  }
+  if (!url) return res.status(400).json({ error: 'Falta el parámetro url' });
 
   let browser;
   try {
@@ -22,85 +19,82 @@ app.get('/precio', async (req, res) => {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
 
-    const context = await browser.newContext({
+    // Paso 1: Obtener URL real con mobile UA
+    const mobileContext = await browser.newContext({
       userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
       viewport: { width: 390, height: 844 },
       isMobile: true,
     });
+    const mobilePage = await mobileContext.newPage();
+    await mobilePage.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    await mobilePage.waitForTimeout(3000);
 
-    const page = await context.newPage();
-    
-    // Navegar al link para obtener la URL real del producto
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-await page.waitForTimeout(5000);
-    
-    let productoUrl = page.url();
-    
-    // Si cae en captcha, extraer URL real del parámetro redirection
+    let productoUrl = mobilePage.url();
     if (productoUrl.includes('/risk/challenge') || productoUrl.includes('captcha')) {
       const urlObj = new URL(productoUrl);
-      const redirection = urlObj.searchParams.get('redirection');
-      if (redirection) {
-        productoUrl = redirection;
-      }
+      productoUrl = urlObj.searchParams.get('redirection') || productoUrl;
     }
-    
-    // Extraer goods_id del URL del producto
+    await mobileContext.close();
+
+    // Extraer goods_id
     const matchId = productoUrl.match(/[-,]p-(\d+)-/);
     if (!matchId) {
       await browser.close();
-      return res.json({ exito: false, error: 'No se pudo extraer el ID del producto', url_final: productoUrl });
+      return res.json({ exito: false, error: 'No se pudo extraer ID del producto', url_final: productoUrl });
     }
-    
     const goodsId = matchId[1];
-    
-    // Consultar API de Shein directamente
-    const apiUrl = `https://us.shein.com/api/productInfo/get_product_info_v2?goods_id=${goodsId}&currency=USD&lang=en`;
-    
-    const apiResponse = await page.evaluate(async (apiUrl) => {
-      try {
-        const resp = await fetch(apiUrl, {
-          headers: {
-            'Accept': 'application/json',
-            'Referer': 'https://us.shein.com/'
+
+    // Paso 2: Scrape con desktop UA en shein.com
+    const desktopContext = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      viewport: { width: 1280, height: 800 },
+    });
+    const desktopPage = await desktopContext.newPage();
+    const desktopUrl = `https://us.shein.com/product/index.html?goods_id=${goodsId}`;
+    await desktopPage.goto(desktopUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await desktopPage.waitForTimeout(5000);
+
+    const datos = await desktopPage.evaluate(() => {
+      const precioSelectors = [
+        '.product-intro__head-price .from',
+        '.product-intro__head-price span',
+        '[class*="product-price"] span',
+        '.she-color-red',
+        '[class*="price-info"] span',
+        '[class*="price"]'
+      ];
+      let precio = null;
+      for (const sel of precioSelectors) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+          const text = el.textContent.trim();
+          if (text.match(/\$[\d.]+/)) {
+            precio = text;
+            break;
           }
-        });
-        return await resp.json();
-      } catch(e) {
-        return null;
+        }
+        if (precio) break;
       }
-    }, apiUrl);
-    
+
+      const h1 = document.querySelector('h1');
+      const nombre = h1 ? h1.textContent.trim() : document.title;
+
+      return { precio, nombre, titulo: document.title, finalUrl: window.location.href };
+    });
+
     await browser.close();
-    
-    if (apiResponse && apiResponse.info && apiResponse.info.goods_price_info) {
-      const priceInfo = apiResponse.info.goods_price_info;
-      const nombre = apiResponse.info.goods_name || apiResponse.info.goods_name_en || '';
-      const precio = priceInfo.discountPrice?.amountWithSymbol || priceInfo.salePrice?.amountWithSymbol || null;
-      
-      return res.json({
-        exito: true,
-        goods_id: goodsId,
-        precio,
-        nombre,
-        url_producto: productoUrl
-      });
-    }
-    
-    res.json({ 
-      exito: false, 
-      error: 'No se pudo obtener precio de la API',
+
+    res.json({
+      exito: true,
       goods_id: goodsId,
-      url_producto: productoUrl,
-      api_response: apiResponse
+      precio: datos.precio,
+      nombre: datos.nombre,
+      url_producto: datos.finalUrl
     });
 
   } catch (error) {
     if (browser) await browser.close();
-    res.status(500).json({ 
-      exito: false, 
-      error: error.message 
-    });
+    res.status(500).json({ exito: false, error: error.message });
   }
 });
 
