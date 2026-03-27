@@ -44,42 +44,46 @@ app.get('/precio', async (req, res) => {
     }
     const goodsId = matchId[1];
 
-    // Paso 2: Scrape con desktop UA en shein.com
+       // Paso 2: Construir URL desktop desde la URL mobile del producto
+    const desktopUrl = productoUrl
+      .replace('https://m.shein.com/us/', 'https://us.shein.com/')
+      .split('?')[0]; // quitar query params
+
     const desktopContext = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       viewport: { width: 1280, height: 800 },
     });
     const desktopPage = await desktopContext.newPage();
-    const desktopUrl = `https://us.shein.com/product/index.html?goods_id=${goodsId}`;
     await desktopPage.goto(desktopUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await desktopPage.waitForTimeout(5000);
+    
+    // Esperar que cargue el precio
+    try {
+      await desktopPage.waitForSelector('[class*="price"]', { timeout: 10000 });
+    } catch(e) {}
+    
+    await desktopPage.waitForTimeout(3000);
 
     const datos = await desktopPage.evaluate(() => {
-      const precioSelectors = [
-        '.product-intro__head-price .from',
-        '.product-intro__head-price span',
-        '[class*="product-price"] span',
-        '.she-color-red',
-        '[class*="price-info"] span',
-        '[class*="price"]'
-      ];
+      // Buscar cualquier elemento con precio en dólares
+      const allEls = document.querySelectorAll('*');
       let precio = null;
-      for (const sel of precioSelectors) {
-        const els = document.querySelectorAll(sel);
-        for (const el of els) {
+      let precioEl = null;
+      
+      for (const el of allEls) {
+        if (el.children.length === 0) { // solo elementos hoja
           const text = el.textContent.trim();
-          if (text.match(/\$[\d.]+/)) {
+          if (text.match(/^\$[\d.]+$/) || text.match(/^\$[\d,]+\.\d{2}$/)) {
             precio = text;
+            precioEl = el.className;
             break;
           }
         }
-        if (precio) break;
       }
 
       const h1 = document.querySelector('h1');
-      const nombre = h1 ? h1.textContent.trim() : document.title;
+      const nombre = h1 ? h1.textContent.trim() : null;
 
-      return { precio, nombre, titulo: document.title, finalUrl: window.location.href };
+      return { precio, nombre, precioEl, titulo: document.title, finalUrl: window.location.href };
     });
 
     await browser.close();
@@ -89,8 +93,10 @@ app.get('/precio', async (req, res) => {
       goods_id: goodsId,
       precio: datos.precio,
       nombre: datos.nombre,
+      clase_precio: datos.precioEl,
       url_producto: datos.finalUrl
     });
+
 
   } catch (error) {
     if (browser) await browser.close();
