@@ -54,7 +54,9 @@ app.get('/precio', async (req, res) => {
       viewport: { width: 1280, height: 800 },
     });
     const desktopPage = await desktopContext.newPage();
-    await desktopPage.goto(desktopUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(desktopUrl)}&render=true`;
+await desktopPage.goto(scraperUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
     
     // Esperar que cargue el precio
     try {
