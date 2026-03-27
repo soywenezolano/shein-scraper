@@ -23,7 +23,7 @@ app.get('/health', (req, res) => {
 app.get('/debug', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: 'Falta url' });
-  const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(url)}&render=true`;
+  const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(url)}&render=true&premium=true`;
   const html = await httpGet(scraperUrl);
   res.send(html.substring(0, 3000));
 });
@@ -64,12 +64,12 @@ app.get('/precio', async (req, res) => {
     }
     const goodsId = matchId[1];
 
-    // Paso 2: Obtener HTML via ScraperAPI
+    // Paso 2: Obtener HTML via ScraperAPI premium
     const desktopUrl = productoUrl
       .replace('https://m.shein.com/us/', 'https://us.shein.com/')
       .split('?')[0];
 
-    const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(desktopUrl)}&render=true`;
+    const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(desktopUrl)}&render=true&premium=true`;
     const html = await httpGet(scraperUrl);
 
     // Buscar precio en JSON embebido en el HTML
