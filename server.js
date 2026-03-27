@@ -31,8 +31,8 @@ app.get('/precio', async (req, res) => {
     const page = await context.newPage();
     
     // Navegar al link para obtener la URL real del producto
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(2000);
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+await page.waitForTimeout(5000);
     
     let productoUrl = page.url();
     
