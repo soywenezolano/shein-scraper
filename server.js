@@ -1,13 +1,16 @@
 const express = require('express');
 const { chromium } = require('playwright');
 const http = require('http');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-function httpGet(url) {
+function httpGet(url, headers = {}) {
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
+    const lib = url.startsWith('https') ? https : http;
+    const options = { headers };
+    lib.get(url, options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => resolve(data));
@@ -20,75 +23,76 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-app.get('/debug', async (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).json({ error: 'Falta url' });
-  const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(url)}&render=true&premium=true`;
-  const html = await httpGet(scraperUrl);
-  res.send(html.substring(0, 5000));
-});
+app.get('/carrito', async (req, res) => {
+  const cartUrl = req.query.url;
+  if (!cartUrl) return res.status(400).json({ error: 'Falta el parámetro url' });
 
-app.get('/precio', async (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).json({ error: 'Falta el parámetro url' });
+  const adspowerBase = process.env.ADSPOWER_URL;
+  const adspowerKey = process.env.ADSPOWER_KEY;
+  const profileId = process.env.ADSPOWER_PROFILE_ID;
 
-  let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    // Iniciar el browser de AdsPower
+    const startResp = await httpGet(
+      `${adspowerBase}/api/v1/browser/start?user_id=${profileId}`,
+      { 'X-API-KEY': adspowerKey }
+    );
+    const startData = JSON.parse(startResp);
+
+    if (startData.code !== 0) {
+      return res.status(500).json({ error: 'No se pudo iniciar AdsPower', detalle: startData });
+    }
+
+    const wsEndpoint = startData.data.ws.puppeteer;
+    const debugPort = startData.data.debug_port;
+
+    // Conectar Playwright al browser de AdsPower
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+    const context = browser.contexts()[0];
+    const page = await context.newPage();
+
+    // Abrir el carrito
+    await page.goto(cartUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.waitForTimeout(5000);
+
+    // Extraer artículos del carrito
+    const articulos = await page.evaluate(() => {
+      const items = [];
+      const selectors = [
+        '.cart-item',
+        '[class*="cart-item"]',
+        '[class*="goods-item"]',
+        '.product-item'
+      ];
+
+      for (const sel of selectors) {
+        const els = document.querySelectorAll(sel);
+        if (els.length > 0) {
+          els.forEach(el => {
+            const nombre = el.querySelector('[class*="name"], [class*="title"], h3, h4')?.textContent?.trim();
+            const precio = el.querySelector('[class*="price"]')?.textContent?.trim();
+            const talla = el.querySelector('[class*="size"], [class*="talla"]')?.textContent?.trim();
+            if (nombre || precio) {
+              items.push({ nombre, precio, talla });
+            }
+          });
+          break;
+        }
+      }
+      return items;
     });
 
-    const mobileContext = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-      viewport: { width: 390, height: 844 },
-      isMobile: true,
-    });
-    const mobilePage = await mobileContext.newPage();
-    await mobilePage.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-    await mobilePage.waitForTimeout(3000);
+    await page.close();
 
-    let productoUrl = mobilePage.url();
-    if (productoUrl.includes('/risk/challenge') || productoUrl.includes('captcha')) {
-      const urlObj = new URL(productoUrl);
-      productoUrl = urlObj.searchParams.get('redirection') || productoUrl;
-    }
-    await mobileContext.close();
-    await browser.close();
+    // Cerrar el browser de AdsPower
+    await httpGet(
+      `${adspowerBase}/api/v1/browser/stop?user_id=${profileId}`,
+      { 'X-API-KEY': adspowerKey }
+    );
 
-    const matchId = productoUrl.match(/[-,]p-(\d+)-/);
-    if (!matchId) {
-      return res.json({ exito: false, error: 'No se pudo extraer ID del producto', url_final: productoUrl });
-    }
-    const goodsId = matchId[1];
-
-    const apiUrl = `https://us.shein.com/api/productInfo/get_product_info_v2?goods_id=${goodsId}&currency=USD&lang=en&appVersion=1`;
-    const scraperUrl = `http://api.scraperapi.com?api_key=${process.env.SCRAPER_API_KEY}&url=${encodeURIComponent(apiUrl)}&premium=true`;
-    const rawData = await httpGet(scraperUrl);
-
-    let precio = null;
-    let nombre = null;
-
-    try {
-      const data = JSON.parse(rawData);
-      const info = data.info || data.data || data;
-      const priceInfo = info.goods_price_info || info.priceInfo || {};
-      precio = priceInfo.discountPrice?.amountWithSymbol
-            || priceInfo.salePrice?.amountWithSymbol
-            || priceInfo.retailPrice?.amountWithSymbol
-            || null;
-      nombre = info.goods_name || info.productTitle || info.title || null;
-    } catch(e) {
-      const precioMatch = rawData.match(/"amountWithSymbol"\s*:\s*"([^"]+)"/);
-      const nombreMatch = rawData.match(/"goods_name"\s*:\s*"([^"]+)"/);
-      precio = precioMatch ? precioMatch[1] : null;
-      nombre = nombreMatch ? nombreMatch[1] : null;
-    }
-
-    res.json({ exito: true, goods_id: goodsId, precio, nombre, url_producto: productoUrl });
+    res.json({ exito: true, total: articulos.length, articulos });
 
   } catch (error) {
-    if (browser) try { await browser.close(); } catch(e) {}
     res.status(500).json({ exito: false, error: error.message });
   }
 });
